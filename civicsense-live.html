@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CivicSense Live</title>
+<style>
+:root{--bg:#0a1730;--card:#112447;--ink:#e8f1ff;--mute:#8fa6cc;--acc:#19e0d0;--bad:#ff5d5d;--line:#1f3866}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,sans-serif;padding:12px;padding-top:calc(env(safe-area-inset-top,0px) + 12px)}
+h1{font-size:20px;margin:0 0 4px}.m{color:var(--mute);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:10px;max-width:640px;margin-inline:auto}
+.vw{position:relative}video,canvas{width:100%;display:block;border-radius:6px;background:#000}canvas{position:absolute;inset:0;height:100%}
+button,select{background:var(--acc);color:#04202a;border:0;border-radius:6px;padding:9px 12px;font-weight:700;font-size:14px}
+button.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center}
+.v{display:flex;gap:10px;padding:8px 0;border-top:1px solid var(--line)}.v img{width:100px;height:60px;object-fit:cover;border-radius:4px;flex:none}
+.v small{display:block;color:var(--mute)}.st{font-size:11px;font-weight:700;border:1px solid var(--acc);color:var(--acc);border-radius:99px;padding:0 8px}
+#status{font-size:13px;color:var(--acc)}
+</style></head><body>
+<div style="max-width:640px;margin:auto"><h1>CivicSense Live</h1><div class="m">Real camera + real AI detection + real GPS. Runs fully on your phone.</div></div>
+<div class="card">
+<div class="vw"><video id="v" playsinline muted></video><canvas id="o"></canvas></div>
+<div class="row"><button id="start">Start camera</button><button class="alt" id="rep" disabled>Report manually</button></div>
+<div class="row"><span class="m">Fine ₹</span><select id="fine"><option value="500">500 Littering</option><option value="1000">1000 Plastic waste</option><option value="2000">2000 Dumping</option></select></div>
+<div id="status" class="m" style="margin-top:6px">Tap "Start camera". Allow camera and location.</div>
+</div>
+<div class="card"><b>Violation records</b><div id="log" class="m">None yet.</div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script>
+const $=id=>document.getElementById(id),v=$("v"),o=$("o"),c=o.getContext("2d");
+const LITTER=["bottle","cup","bowl","banana","apple","orange","sandwich","donut","cake","wine glass"];
+const VEH=["car","motorcycle","bus","truck"];
+let model,gps=null,held=null,last=0,recs=[],n=0;
+const say=t=>$("status").textContent=t;
+function loc(){navigator.geolocation&&navigator.geolocation.watchPosition(p=>gps=p.coords,()=>say("Location blocked: GPS will show N/A"),{enableHighAccuracy:true})}
+$("start").onclick=async()=>{
+ try{say("Starting camera...");
+  v.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"},audio:false});await v.play();
+  o.width=v.videoWidth;o.height=v.videoHeight;loc();
+  say("Loading AI model (first time takes a few seconds)...");model=await cocoSsd.load();
+  $("start").style.display="none";$("rep").disabled=false;say("Watching. Detecting persons, bottles, plastics, vehicles.");tick()
+ }catch(e){say("Error: "+e.message+" (page must be opened over https)")}};
+const mid=b=>[b[0]+b[2]/2,b[1]+b[3]/2],dist=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
+async function tick(){
+ const P=await model.detect(v);c.clearRect(0,0,o.width,o.height);c.lineWidth=3;c.font="bold 16px sans-serif";
+ const persons=[],lit=[],veh=[];
+ P.forEach(p=>{const k=p.class;let col=null;
+  if(k==="person"){persons.push(p);col="#19e0d0"}else if(LITTER.includes(k)){lit.push(p);col="#ffd447"}else if(VEH.includes(k)){veh.push(p);col="#c58bff"}
+  if(col&&p.score>.4){c.strokeStyle=col;c.strokeRect(...p.bbox);const t=k+" "+Math.round(p.score*100)+"%";c.fillStyle=col;c.fillRect(p.bbox[0],p.bbox[1]-20,c.measureText(t).width+8,20);c.fillStyle="#04202a";c.fillText(t,p.bbox[0]+4,p.bbox[1]-5)}});
+ const now=Date.now();
+ lit.forEach(l=>{const lm=mid(l.bbox);let near=null;
+  persons.forEach(p=>{const d=dist(lm,mid(p.bbox));if(d<Math.max(p.bbox[2],p.bbox[3])*.7)near=p});
+  if(near){held={t:now,pos:lm}}
+  else if(held&&now-held.t<5000&&dist(lm,held.pos)>50&&now-last>15000){last=now;flag("Littering detected",l.class,veh)}});
+ requestAnimationFrame(tick)}
+function flag(type,obj,veh){
+ const s=document.createElement("canvas");s.width=v.videoWidth;s.height=v.videoHeight;const x=s.getContext("2d");x.drawImage(v,0,0);x.drawImage(o,0,0);
+ const r={id:"V-"+String(++n).padStart(3,"0"),img:s.toDataURL("image/jpeg",.6),type,obj,fine:$("fine").value,time:new Date().toLocaleString(),
+  gps:gps?gps.latitude.toFixed(5)+", "+gps.longitude.toFixed(5):"N/A",veh:veh&&veh.length?veh[0].class+" (plate: add OCR)":"None",st:"Pending"};
+ recs.unshift(r);draw();say(r.id+" recorded");navigator.vibrate&&navigator.vibrate(200);if(window.Notification&&Notification.permission==="granted")new Notification("CivicSense",{body:r.type+" · ₹"+r.fine})}
+$("rep").onclick=()=>{if(Notification&&Notification.permission==="default")Notification.requestPermission();flag("Manual report","reported by user",[])};
+function setSt(i,s){recs[i].st=s;draw()}
+function draw(){$("log").innerHTML=recs.map((r,i)=>`<div class="v"><img src="${r.img}" alt="Evidence"><div><b>${r.type}</b> · ₹${r.fine} <span class="st">${r.st}</span><small>${r.id} · ${r.time}</small><small>Object: ${r.obj} · Vehicle: ${r.veh}</small><small>GPS ${r.gps}${r.gps!=="N/A"?` · <a style="color:var(--acc)" target="_blank" href="https://maps.google.com/?q=${r.gps.replace(" ","")}">map</a>`:""}</small>${r.st==="Pending"?`<button class="alt" onclick="setSt(${i},'Verified')">Verify</button>`:r.st==="Verified"?`<button class="alt" onclick="setSt(${i},'Resolved')">Resolve</button>`:""}</div></div>`).join("")}
+</script></body></html>
