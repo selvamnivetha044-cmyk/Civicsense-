@@ -17,6 +17,8 @@ button,select{background:var(--acc);color:#04202a;font-weight:600}
 button.alt{background:transparent;color:var(--ink)}
 input{background:#0a1730;color:var(--ink);flex:1;min-width:0}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
+#wb{margin-top:8px;padding:10px 12px;border-radius:8px;background:#0a1730;border:1px solid var(--line);font-weight:700;font-size:16px;color:var(--mute)}
+#wb.on{color:#ff8a8a;border-color:#ff5c5c}
 #status{color:var(--acc);font-size:13px;margin-top:8px}
 .v{display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
 .v img{width:112px;height:112px;object-fit:cover;border-radius:6px;flex:none}
@@ -30,6 +32,7 @@ input{background:#0a1730;color:var(--ink);flex:1;min-width:0}
 <div class="m">Camera + AI + GPS. Runs fully on your phone.</div>
 <div class="card">
  <div class="vw"><video id="v" playsinline muted></video><canvas id="o"></canvas></div>
+ <div id="wb">Waste: none detected</div>
  <div class="row"><button id="start">Start camera</button><button class="alt" id="man">Report manually</button></div>
  <div class="row"><span class="m">Fine ₹</span>
   <select id="fine"><option value="100">100</option><option value="200">200</option><option value="500" selected>500</option></select>
@@ -54,18 +57,19 @@ if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(
 const $=id=>document.getElementById(id),v=$('v'),o=$('o'),cx=o.getContext('2d');
 const COCO_WASTE=['bottle','cup','bowl','banana','apple','orange','sandwich','wine glass','donut','cake','pizza','hot dog','carrot','broccoli','fork','knife','spoon'];
 const VEH=['car','motorcycle','bus','truck'];
-const KW=['bottle','plastic bag','carton','paper towel','toilet tissue','packet','envelope','cup','mug','ashcan','milk can','diaper','crate','jug','tray','pill'];
+const KW=['bottle','plastic bag','carton','paper towel','toilet tissue','packet','envelope','cup','mug','ashcan','milk can','diaper','crate','jug','tray','pill','bag','jar','tin','wrapper','flask','thermos','bucket','pail','plate','pot'];
 const NICE={bottle:'Plastic bottle',cup:'Disposable cup',bowl:'Food container','wine glass':'Glass waste',banana:'Food waste (banana)',apple:'Food waste (apple)',orange:'Food waste (orange)',sandwich:'Food waste',donut:'Food waste',cake:'Food waste',pizza:'Food waste','hot dog':'Food waste',carrot:'Food waste',broccoli:'Food waste',fork:'Plastic cutlery',knife:'Cutlery',spoon:'Plastic cutlery'};
 const POEMS=['Bin it, don\'t fling it.','Keep it clean, keep it green, a tidy street is a happy scene.','A clean city starts with you.','Drop it in the bin, let the city win.','Waste in the bin, pride within.','Your litter is someone\'s problem; your bin is everyone\'s solution.'];
 let det,mob,ocr,dets=[],busy=false,tick=0,gps=null,mobW=null,vehPlate=null,plateBusy=false,fails=0,cool={};
 let recs=[];try{recs=JSON.parse(localStorage.getItem('cs_recs')||'[]')}catch(e){}
 
 navigator.geolocation&&navigator.geolocation.watchPosition(p=>gps=p.coords,()=>{},{enableHighAccuracy:true});
-(async()=>{try{[det,mob]=await Promise.all([cocoSsd.load(),mobilenet.load()]);$('status').textContent='Ready. Tap "Start camera".'}catch(e){$('status').textContent='Model load failed. Check internet and refresh.'}})();
+(async()=>{try{await tf.ready();det=await cocoSsd.load();$('status').textContent='Ready. Tap "Start camera".'}catch(e){$('status').textContent='Detector failed to load: '+(e.message||e)+'. Check internet and refresh.'}
+ try{mob=await mobilenet.load()}catch(e){}})();
 
 $('start').onclick=async()=>{
  try{v.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});await v.play();
- o.width=v.videoWidth;o.height=v.videoHeight;$('status').textContent='Watching: persons, vehicles, number plates and waste.';$('start').style.display='none';loop()}
+ o.width=v.videoWidth;o.height=v.videoHeight;$('status').textContent=det?'Watching: persons, vehicles, number plates and waste.':'Camera on. AI model still loading, please wait...';$('start').style.display='none';loop()}
  catch(e){$('status').textContent='Camera blocked. Allow camera in site permissions.'}};
 
 function colorName(b){const t=document.createElement('canvas');t.width=t.height=1;const c=t.getContext('2d');
@@ -75,22 +79,25 @@ function colorName(b){const t=document.createElement('canvas');t.width=t.height=
 const ctr=b=>[b[0]+b[2]/2,b[1]+b[3]/2];
 const near=(a,b)=>{const[ax,ay]=ctr(a),[bx,by]=ctr(b);return Math.hypot(ax-bx,ay-by)<Math.max(a[2],a[3])*1.1};
 
+let shown=0;
 async function loop(){
+ if(det&&!shown&&v.readyState>=2){shown=1;$('status').textContent='Watching: persons, vehicles, number plates and waste.'}
  if(v.readyState>=2&&!busy&&det){busy=true;
-  try{dets=await det.detect(v,15);tick++;await analyze();draw()}catch(e){}
+  try{dets=await det.detect(v,15);tick++;await analyze();draw()}catch(e){$('status').textContent='Detect error: '+(e.message||e)}
   busy=false}
  setTimeout(loop,350)}
 
 async function analyze(){
  const P=dets.filter(d=>d.class==='person'&&d.score>.7);
  const V=dets.filter(d=>VEH.includes(d.class)&&d.score>.5);
- const W=dets.filter(d=>COCO_WASTE.includes(d.class)&&d.score>.4);
+ const W=dets.filter(d=>COCO_WASTE.includes(d.class)&&d.score>.3);
  let waste=null,wb=null;
  if(W.length){waste=NICE[W[0].class]||W[0].class;wb=W[0].bbox}
- else if(tick%4===0&&(P.length||V.length)){
+ else if(mob&&tick%3===0){
   try{const r=await mob.classify(v,3);for(const x of r){const n=x.className.toLowerCase();
    if(x.probability>.3&&KW.some(k=>n.includes(k))){const nm=x.className.split(',')[0];mobW={n:nm[0].toUpperCase()+nm.slice(1),t:Date.now()};break}}}catch(e){}}
  if(!waste&&mobW&&Date.now()-mobW.t<3000)waste=mobW.n;
+ $('wb').textContent=waste?'Waste detected: '+waste:'Waste: none detected';$('wb').className=waste?'on':'';
  $('live').textContent=`Persons: ${P.length} · Vehicles: ${V.length} · Waste: ${waste||'none'}`;
  // person + waste
  if(P.length&&waste&&ok('p',6000)){
@@ -124,7 +131,7 @@ async function readPlate(b){
 function draw(){cx.clearRect(0,0,o.width,o.height);cx.lineWidth=3;cx.font='bold 16px sans-serif';
  for(const d of dets){if(d.score<.4)continue;const[x,y,w,h]=d.bbox;
   const col=d.class==='person'?'#f5b942':VEH.includes(d.class)?'#5ec8ff':COCO_WASTE.includes(d.class)?'#ff5c5c':'#9a9ab0';
-  let lb=`${d.class} ${Math.round(d.score*100)}%`;
+  let lb=`${COCO_WASTE.includes(d.class)?(NICE[d.class]||d.class):d.class} ${Math.round(d.score*100)}%`;
   if(VEH.includes(d.class)&&vehPlate&&Date.now()-vehPlate.t<8000)lb+=' · '+vehPlate.txt;
   cx.strokeStyle=col;cx.strokeRect(x,y,w,h);const tw=cx.measureText(lb).width+8;
   cx.fillStyle=col;cx.fillRect(x,Math.max(0,y-22),tw,22);cx.fillStyle='#000';cx.fillText(lb,x+4,Math.max(16,y-5))}}
@@ -151,11 +158,19 @@ function render(){
   </div></div>`).join(''):'<div class="m">None yet.</div>'}
 $('log').onclick=e=>{const b=e.target.closest('button');if(!b)return;const r=recs.find(x=>x.id===b.dataset.i);if(r){r.status=b.dataset.a;save();render()}};
 $('clr').onclick=()=>{recs=[];save();render()};
-$('man').onclick=()=>{
+async function wasteName(){
+ const w=dets.find(d=>COCO_WASTE.includes(d.class)&&d.score>.3);
+ if(w)return NICE[w.class]||w.class;
+ if(mob){try{const r=await mob.classify(v,5);
+  for(const x of r){const n=x.className.toLowerCase();if(x.probability>.12&&KW.some(k=>n.includes(k))){const t=x.className.split(',')[0];return t[0].toUpperCase()+t.slice(1)}}
+  if(r[0]&&r[0].probability>.2)return 'Object: '+r[0].className.split(',')[0]+' ('+Math.round(r[0].probability*100)+'%)'}catch(e){}}
+ return 'Waste reported by user'}
+$('man').onclick=async()=>{
  if(!v.srcObject){$('status').textContent='Start the camera first.';return}
+ $('status').textContent='Identifying waste...';
  const typed=$('plate').value.trim().toUpperCase(),pl=(vehPlate&&Date.now()-vehPlate.t<8000)?vehPlate.txt:typed;
- const w=dets.find(d=>COCO_WASTE.includes(d.class));
- add(pl?{kind:'Manual report (vehicle)',waste:w?NICE[w.class]:'Waste reported by user',plate:pl,fine:Math.min(+$('fine').value,500)}
-  :{kind:'Manual report',waste:w?NICE[w.class]:'Waste reported by user',name:$('name').value.trim()||'Unknown (enter name)',fine:+$('fine').value})};
+ const waste=await wasteName();
+ add(pl?{kind:'Manual report (vehicle)',waste,plate:pl,fine:Math.min(+$('fine').value,500)}
+  :{kind:'Manual report',waste,name:$('name').value.trim()||'Unknown (enter name)',fine:+$('fine').value})};
 render();
 </script></body></html>
